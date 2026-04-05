@@ -1,0 +1,12 @@
+{
+  "name": "multiagent-automl",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "concurrently \"npm run start:backend\" \"npm run start:frontend\"",
+    "start:backend": "cd backend && .\\venv\\Scripts\\python.exe -m uvicorn main:app --port 8000 --reload",
+    "start:frontend": "cd frontend && npx rimraf .next && npm run dev"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
