@@ -19,6 +19,18 @@ const STEPS = [
 
 const PIE_COLORS = ["#7c6cf0", "#34d399", "#60a5fa", "#fbbf24", "#f87171", "#a78bfa", "#fb923c", "#2dd4bf"];
 const AUTO_BAR_COLORS = ["#7c6cf0", "#34d399", "#60a5fa", "#fbbf24", "#f87171", "#a78bfa"];
+const METRIC_LABELS: Record<string, string> = {
+  model_used: "Model Used",
+  task: "Task",
+  target_column: "Target Column",
+  accuracy: "Accuracy",
+  precision: "Precision",
+  recall: "Recall",
+  f1_score: "F1 Score",
+  r2_score: "R2 Score",
+  rmse: "RMSE",
+};
+const PERCENT_METRIC_KEYS = new Set(["accuracy", "precision", "recall"]);
 
 interface VisualizerProps {
   currentStep: string;
@@ -47,7 +59,7 @@ function ChartCard({ chart }: { chart: ChartConfig }) {
                 innerRadius={50}
                 dataKey="value"
                 nameKey="name"
-                label={({ name, percent }) => `${name} (${(percent * 100).toFixed(0)}%)`}
+                label={({ name, percent }) => `${name} (${((percent ?? 0) * 100).toFixed(0)}%)`}
                 labelLine={true}
                 stroke="rgba(0,0,0,0.3)"
                 strokeWidth={1}
@@ -141,6 +153,26 @@ export default function Visualizer({ currentStep, activeTab, setActiveTab, stepR
   const hasMetrics = Object.keys(metrics).length > 0;
   const charts = activeResult?.charts || [];
 
+  const metricEntries = Object.entries(metrics).filter(([_, val]) => {
+    if (val === null) return false;
+    if (typeof val === "object" || Array.isArray(val)) return false;
+    if (typeof val === "string" && val.includes("[object Object]")) return false;
+    return true;
+  });
+
+  const formatMetricValue = (key: string, val: string | number | boolean) => {
+    if (typeof val === "number") {
+      if (PERCENT_METRIC_KEYS.has(key)) {
+        return `${(val * 100).toFixed(1)}%`;
+      }
+      return Number.isInteger(val) ? String(val) : val.toFixed(4);
+    }
+    if (typeof val === "boolean") {
+      return val ? "Yes" : "No";
+    }
+    return String(val);
+  };
+
   if (!hasData) {
     return (
       <>
@@ -203,14 +235,16 @@ export default function Visualizer({ currentStep, activeTab, setActiveTab, stepR
             {/* Metrics */}
             {hasMetrics && (
               <div className="metrics-grid">
-                {Object.entries(metrics).map(([key, val]) => (
-                  <div key={key} className="metric-card">
-                    <div className="metric-label">{key.replace(/_/g, " ")}</div>
-                    <div className="metric-value">
-                      {typeof val === "number" ? (val < 1 && val > 0 ? `${(val * 100).toFixed(1)}%` : val.toFixed(2)) : String(val)}
+                {metricEntries.map(([key, val]) => {
+                  return (
+                    <div key={key} className="metric-card">
+                      <div className="metric-label">{METRIC_LABELS[key] || key.replace(/_/g, " ")}</div>
+                      <div className="metric-value">
+                        {formatMetricValue(key, val as string | number | boolean)}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
 

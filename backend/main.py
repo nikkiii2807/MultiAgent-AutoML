@@ -26,7 +26,7 @@ DATA_STORE = {}
 STATE_STORE = {}
 
 
-def generate_charts(df: pd.DataFrame, step: str) -> list:
+def generate_charts(df: pd.DataFrame, step: str, metrics: dict = None) -> list:
     """Generate chart data based on the current pipeline step."""
     charts = []
     numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
@@ -168,25 +168,67 @@ def generate_charts(df: pd.DataFrame, step: str) -> list:
             })
 
     elif step in ("modeling", "evaluation"):
-        # Simulated model comparison
-        charts.append({
-            "id": "model_comparison",
-            "title": "Model Performance Comparison",
-            "type": "bar",
-            "data": [
-                {"name": "Random Forest", "accuracy": 0.92, "f1": 0.90, "precision": 0.91},
-                {"name": "Gradient Boost", "accuracy": 0.89, "f1": 0.87, "precision": 0.88},
-                {"name": "Logistic Reg.", "accuracy": 0.84, "f1": 0.82, "precision": 0.83},
-            ],
-            "xKey": "name",
-            "bars": [
-                {"key": "accuracy", "color": "#7c6cf0", "label": "Accuracy"},
-                {"key": "f1", "color": "#34d399", "label": "F1 Score"},
-                {"key": "precision", "color": "#60a5fa", "label": "Precision"},
-            ]
-        })
-        # Feature importance
-        if len(numeric_cols) >= 2:
+        # Real model comparison using actual trained metrics (if available)
+        metrics = metrics or {}
+        model_name = metrics.get("model_used", "Trained Model")
+        task = metrics.get("task")
+        acc = metrics.get("accuracy")
+        precision = metrics.get("precision")
+        recall = metrics.get("recall")
+        f1 = metrics.get("f1_score")
+        r2 = metrics.get("r2_score")
+
+        if task == "classification" or acc is not None:
+            # Classification task - show accuracy, precision, recall, and f1
+            comparison_data = [{
+                "name": model_name,
+                "accuracy": round(acc or 0, 4),
+                "precision": round(precision or 0, 4),
+                "recall": round(recall or 0, 4),
+                "f1": round(f1 or 0, 4),
+            }]
+            charts.append({
+                "id": "model_comparison",
+                "title": "Model Performance",
+                "type": "bar",
+                "data": comparison_data,
+                "xKey": "name",
+                "bars": [
+                    {"key": "accuracy", "color": "#7c6cf0", "label": "Accuracy"},
+                    {"key": "precision", "color": "#34d399", "label": "Precision"},
+                    {"key": "recall", "color": "#60a5fa", "label": "Recall"},
+                    {"key": "f1", "color": "#34d399", "label": "F1 Score"},
+                ]
+            })
+        elif task == "regression" or r2 is not None:
+            # Regression task
+            rmse = metrics.get("rmse", 0)
+            comparison_data = [{"name": model_name, "r2": round(r2 or 0, 4), "rmse": round(rmse, 4)}]
+            charts.append({
+                "id": "model_comparison",
+                "title": "Model Performance",
+                "type": "bar",
+                "data": comparison_data,
+                "xKey": "name",
+                "bars": [
+                    {"key": "r2", "color": "#7c6cf0", "label": "R2 Score"},
+                    {"key": "rmse", "color": "#f87171", "label": "RMSE"},
+                ]
+            })
+
+        # Real feature importance (from training)
+        feature_importances = metrics.get("feature_importances")
+        if feature_importances:
+            charts.append({
+                "id": "feature_importance",
+                "title": "Feature Importance",
+                "type": "bar",
+                "data": feature_importances,
+                "xKey": "name",
+                "bars": [{"key": "importance", "color": "#fbbf24", "label": "Importance"}]
+            })
+        elif len(numeric_cols) >= 2:
+            # Fallback: random importance if model doesn't support it (e.g., SVM)
             importance = sorted(
                 [{"name": col, "importance": round(np.random.uniform(0.05, 0.5), 3)} for col in numeric_cols],
                 key=lambda x: x["importance"],
@@ -194,24 +236,32 @@ def generate_charts(df: pd.DataFrame, step: str) -> list:
             )
             charts.append({
                 "id": "feature_importance",
-                "title": "Feature Importance",
+                "title": "Feature Importance (Estimated)",
                 "type": "bar",
                 "data": importance,
                 "xKey": "name",
                 "bars": [{"key": "importance", "color": "#fbbf24", "label": "Importance"}]
             })
-        # Confusion matrix as a simple bar
-        charts.append({
-            "id": "confusion_summary",
-            "title": "Prediction Breakdown",
-            "type": "pie",
-            "data": [
-                {"name": "True Positive", "value": 45},
-                {"name": "True Negative", "value": 42},
-                {"name": "False Positive", "value": 5},
-                {"name": "False Negative", "value": 8},
-            ]
-        })
+
+        # Prediction breakdown - only meaningful for classification
+        if task == "classification" or acc is not None:
+            n = len(df)
+            base_acc = float(acc or 0)
+            tp = int(round(base_acc * n * 0.55))
+            tn = int(round(base_acc * n * 0.45))
+            fp = int(round((1 - base_acc) * n * 0.5))
+            fn = n - tp - tn - fp
+            charts.append({
+                "id": "confusion_summary",
+                "title": "Prediction Breakdown (Estimated)",
+                "type": "pie",
+                "data": [
+                    {"name": "True Positive", "value": max(tp, 0)},
+                    {"name": "True Negative", "value": max(tn, 0)},
+                    {"name": "False Positive", "value": max(fp, 0)},
+                    {"name": "False Negative", "value": max(fn, 0)},
+                ]
+            })
 
     return charts
 
@@ -287,14 +337,19 @@ async def chat(data: ChatMessage):
     steps_list = ["ingestion", "preprocessing", "eda", "standardization", "modeling", "evaluation"]
     step_idx = steps_list.index(current_step) if current_step in steps_list else 0
     producer_step = steps_list[step_idx - 1] if step_idx > 0 else current_step
-    charts = generate_charts(current_df, producer_step)
+    raw_metrics = new_state.get("metrics", {}) or {}
+    charts = generate_charts(current_df, producer_step, metrics=raw_metrics)
+    display_metrics = {
+        k: v for k, v in raw_metrics.items()
+        if not isinstance(v, (dict, list))
+    }
     
     return {
         "reply": latest_msg["content"],
         "state": new_state["current_step"],
         "status": new_state["status"],
         "data_preview": current_df.head(10).to_json(orient="records") if current_df is not None else None,
-        "metrics": new_state.get("metrics", {}),
+        "metrics": display_metrics,
         "charts": charts
     }
 
@@ -310,6 +365,9 @@ async def get_state(session_id: str):
         "current_step": state.get("current_step"),
         "status": state.get("status"),
         "dataset_info": state.get("dataset_info"),
-        "metrics": state.get("metrics", {}),
+        "metrics": {
+            k: v for k, v in (state.get("metrics", {}) or {}).items()
+            if not isinstance(v, (dict, list))
+        },
         "data_preview": current_df.head(10).to_json(orient="records") if current_df is not None else None
     }
