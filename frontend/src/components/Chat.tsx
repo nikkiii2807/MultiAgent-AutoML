@@ -1,134 +1,251 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { PIPELINE_STAGES, type StageId } from "../lib/studio";
 
 interface Message {
   role: "user" | "assistant" | "system";
   content: string;
 }
 
-interface ChatProps {
-  onStateUpdate: (state: any) => void;
-  sessionId: string | null;
-  setSessionId: (id: string) => void;
+interface DatasetMeta {
+  name: string;
+  rows: number;
+  columns: number;
 }
 
-export default function Chat({ onStateUpdate, sessionId, setSessionId }: ChatProps) {
+interface ChatProps {
+  currentStage: StageId;
+  onStateUpdate: (state: Record<string, unknown>) => void;
+  pipelineStatus: string;
+  sessionId: string | null;
+  setSessionId: (id: string | null) => void;
+}
+
+function getStageLabel(stageId: StageId): string {
+  return PIPELINE_STAGES.find((stage) => stage.id === stageId)?.label ?? "Notebook";
+}
+
+export default function Chat({
+  currentStage,
+  onStateUpdate,
+  pipelineStatus,
+  sessionId,
+  setSessionId,
+}: ChatProps) {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "assistant",
-      content: "Welcome to **AutoML Studio** 🚀\n\nUpload a CSV dataset below to start the automated analytics pipeline. I'll guide you through every step."
-    }
+      content:
+        "Upload a CSV and I’ll orchestrate the full AutoML pipeline while the notebook on the right updates stage by stage.",
+    },
+    {
+      role: "system",
+      content:
+        "Notebook preview is interactive even before a dataset is attached, so you can inspect every stage layout right away.",
+    },
   ]);
   const [inputVal, setInputVal] = useState("");
   const [loading, setLoading] = useState(false);
   const [awaitingApproval, setAwaitingApproval] = useState(false);
+  const [datasetMeta, setDatasetMeta] = useState<DatasetMeta | null>(null);
 
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const stageLabel = getStageLabel(currentStage);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, loading]);
+  }, [loading, messages]);
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files || e.target.files.length === 0) return;
-    const file = e.target.files[0];
-
-    setLoading(true);
-    setMessages(prev => [...prev, { role: "user", content: `📄 Uploaded **${file.name}**` }]);
-
-    const formData = new FormData();
-    formData.append("file", file);
-
-    try {
-      const res = await fetch("http://localhost:8000/upload", {
-        method: "POST",
-        body: formData,
-      });
-      const data = await res.json();
-      setSessionId(data.session_id);
-      onStateUpdate(data);
-
-      setMessages(prev => [...prev, { role: "system", content: "Dataset uploaded successfully. Running ingestion agent..." }]);
-
-      await sendMessage("Start analysis", "approve", data.session_id);
-    } catch (error) {
-      console.error(error);
-      setMessages(prev => [...prev, { role: "system", content: "⚠️ Could not connect to backend. Is it running on port 8000?" }]);
-    } finally {
-      setLoading(false);
+  async function sendMessage(
+    message: string,
+    action: string | null = null,
+    explicitSessionId: string | null = null,
+  ) {
+    const resolvedSessionId = explicitSessionId ?? sessionId;
+    if (!resolvedSessionId) {
+      return;
     }
-  };
-
-  const sendMessage = async (message: string, action: string | null = null, explicitSessionId: string | null = null) => {
-    const sId = explicitSessionId || sessionId;
-    if (!sId) return;
 
     if (!action) {
-      setMessages(prev => [...prev, { role: "user", content: message }]);
+      setMessages((previous) => [...previous, { role: "user", content: message }]);
     }
 
     setLoading(true);
     setAwaitingApproval(false);
 
     try {
-      const res = await fetch("http://localhost:8000/chat", {
+      const response = await fetch("http://localhost:8000/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sId, message, action })
+        body: JSON.stringify({
+          action,
+          message,
+          session_id: resolvedSessionId,
+        }),
       });
 
-      const data = await res.json();
-      setMessages(prev => [...prev, { role: "assistant", content: data.reply }]);
+      const data = (await response.json()) as Record<string, unknown>;
+
+      if (!response.ok) {
+        throw new Error(String(data.detail ?? "Unable to reach the AutoML backend."));
+      }
+
+      if (typeof data.reply === "string") {
+        setMessages((previous) => [
+          ...previous,
+          { role: "assistant", content: data.reply as string },
+        ]);
+      }
+
       onStateUpdate(data);
 
       if (data.status === "awaiting_human") {
         setAwaitingApproval(true);
       }
     } catch (error) {
-      console.error(error);
-      setMessages(prev => [...prev, { role: "system", content: "⚠️ Error communicating with backend." }]);
+      const messageText =
+        error instanceof Error
+          ? error.message
+          : "Could not communicate with the backend service.";
+
+      setMessages((previous) => [
+        ...previous,
+        { role: "system", content: `⚠️ ${messageText}` },
+      ]);
     } finally {
       setLoading(false);
     }
-  };
+  }
 
-  const handleSend = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!inputVal.trim()) return;
+  async function handleFileUpload(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    setLoading(true);
+    setMessages((previous) => [
+      ...previous,
+      { role: "user", content: `Attached dataset **${file.name}**` },
+    ]);
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const response = await fetch("http://localhost:8000/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = (await response.json()) as Record<string, unknown>;
+
+      if (!response.ok) {
+        throw new Error(String(data.detail ?? "Dataset upload failed."));
+      }
+
+      const nextSessionId = typeof data.session_id === "string" ? data.session_id : null;
+      setSessionId(nextSessionId);
+      onStateUpdate(data);
+      setDatasetMeta({
+        name: file.name,
+        rows: Number(data.rows ?? 0),
+        columns: Array.isArray(data.columns) ? data.columns.length : 0,
+      });
+      setMessages((previous) => [
+        ...previous,
+        {
+          role: "system",
+          content:
+            "Dataset connected. I’m running the ingestion notebook now and will pause wherever human approval is needed.",
+        },
+      ]);
+
+      await sendMessage("Start analysis", "approve", nextSessionId);
+    } catch (error) {
+      const messageText =
+        error instanceof Error
+          ? error.message
+          : "Could not connect to the backend service.";
+
+      setMessages((previous) => [
+        ...previous,
+        { role: "system", content: `⚠️ ${messageText}` },
+      ]);
+    } finally {
+      event.target.value = "";
+      setLoading(false);
+    }
+  }
+
+  function handleSend(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!inputVal.trim() || !sessionId) {
+      return;
+    }
+
     sendMessage(inputVal);
     setInputVal("");
-  };
+  }
 
   return (
     <>
-      {/* Header */}
-      <div className="chat-header">
-        <div className="chat-header-icon">🤖</div>
-        <div>
-          <h2>AutoML Studio</h2>
-          <span className="chat-header-sub">Multi-Agent Analytics Pipeline</span>
+      <div className="chat-panel-header">
+        <div className="assistant-summary">
+          <span className="assistant-dot" />
+          <div>
+            <p className="assistant-chip-label">AutoML Copilot</p>
+            <h2>Focused chat workspace</h2>
+          </div>
         </div>
       </div>
 
-      {/* Messages */}
+      <div className="chat-context-bar">
+        <span className="context-chip">
+          {datasetMeta
+            ? `${datasetMeta.name} · ${datasetMeta.rows.toLocaleString()} rows · ${datasetMeta.columns} cols`
+            : "No dataset attached"}
+        </span>
+        <span className="context-chip">Stage: {stageLabel}</span>
+        <span className="context-chip">
+          Status: {pipelineStatus === "awaiting_human" ? "Awaiting approval" : pipelineStatus}
+        </span>
+      </div>
+
       <div className="messages-area">
-        {messages.map((msg, i) => (
-          <div key={i} className={`msg msg-${msg.role} animate-fade-in-up`}>
-            <div className="msg-bubble">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{msg.content}</ReactMarkdown>
+        {messages.map((message, index) => (
+          <div key={`${message.role}-${index}`} className={`message-row message-${message.role}`}>
+            <div className="message-avatar">
+              {message.role === "assistant" ? "AI" : message.role === "user" ? "You" : "Sys"}
+            </div>
+            <div className="message-stack">
+              <span className="message-role">
+                {message.role === "assistant"
+                  ? "AutoML Copilot"
+                  : message.role === "user"
+                    ? "You"
+                    : "System"}
+              </span>
+              <div className="message-bubble">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+              </div>
             </div>
           </div>
         ))}
 
         {loading && (
-          <div className="msg msg-assistant">
-            <div className="typing-indicator">
-              <span className="typing-dot"></span>
-              <span className="typing-dot"></span>
-              <span className="typing-dot"></span>
+          <div className="message-row message-assistant">
+            <div className="message-avatar">AI</div>
+            <div className="typing-indicator" aria-label="Assistant is typing">
+              <span className="typing-dot" />
+              <span className="typing-dot" />
+              <span className="typing-dot" />
             </div>
           </div>
         )}
@@ -136,39 +253,61 @@ export default function Chat({ onStateUpdate, sessionId, setSessionId }: ChatPro
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Controls */}
       <div className="chat-controls">
-        {!sessionId ? (
-          <label className="upload-zone">
-            <input type="file" accept=".csv" style={{ display: "none" }} onChange={handleFileUpload} />
-            <div className="upload-zone-icon">📊</div>
-            <div className="upload-zone-label">Upload CSV Dataset</div>
-            <div className="upload-zone-sub">Drag & drop or click to browse</div>
-          </label>
-        ) : (
-          <>
-            {awaitingApproval && (
-              <div className="approval-row">
-                <button className="btn btn-approve" onClick={() => sendMessage("Approved", "approve")}>
-                  ✓ Approve & Continue
-                </button>
-              </div>
-            )}
-            <form onSubmit={handleSend} className="chat-input-row">
-              <input
-                className="chat-input"
-                type="text"
-                value={inputVal}
-                onChange={(e) => setInputVal(e.target.value)}
-                placeholder="Ask a question or give instructions..."
-                disabled={loading}
-              />
-              <button type="submit" className="btn btn-send" disabled={loading || !inputVal.trim()}>
-                Send
-              </button>
-            </form>
-          </>
+        {awaitingApproval && (
+          <button
+            type="button"
+            className="action-button action-button-primary"
+            onClick={() => sendMessage("Approved", "approve")}
+          >
+            Approve and continue
+          </button>
         )}
+
+        <form className="composer" onSubmit={handleSend}>
+          <button
+            type="button"
+            className="action-button action-button-secondary"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={loading}
+          >
+            Attach CSV
+          </button>
+
+          <input
+            className="composer-input"
+            type="text"
+            value={inputVal}
+            onChange={(event) => setInputVal(event.target.value)}
+            placeholder={
+              sessionId
+                ? "Ask for changes, approvals, or follow-up analysis..."
+                : "Attach a CSV to start a live conversation with the pipeline"
+            }
+            disabled={!sessionId || loading}
+          />
+
+          <button
+            type="submit"
+            className="action-button action-button-primary"
+            disabled={loading || !sessionId || !inputVal.trim()}
+          >
+            Send
+          </button>
+
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv"
+            hidden
+            onChange={handleFileUpload}
+          />
+        </form>
+
+        <p className="composer-footnote">
+          The copilot stays synced with the notebook stages, so every approval updates the workflow on
+          the right.
+        </p>
       </div>
     </>
   );

@@ -1,102 +1,179 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useCallback, useState } from "react";
 import Chat from "../components/Chat";
 import Visualizer from "../components/Visualizer";
+import {
+  PIPELINE_STAGES,
+  getProducerStage,
+  getStageStatusLabel,
+  getStageVisualStatus,
+  isStageId,
+  type StageId,
+  type StepResult,
+  type StepResults,
+} from "../lib/studio";
 
-export interface ChartConfig {
-  id: string;
-  title: string;
-  type: "bar" | "pie";
-  data: any[];
-  xKey?: string;
-  bars?: { key: string; color: string | null; label: string }[];
-}
-
-export interface StepResult {
-  analysis: string;
-  data_preview: string | null;
-  metrics: Record<string, any>;
-  charts: ChartConfig[];
+function buildStepResult(data: Record<string, unknown>): StepResult {
+  return {
+    analysis: typeof data.reply === "string" ? data.reply : "No analysis available.",
+    data_preview: typeof data.data_preview === "string" ? data.data_preview : null,
+    metrics:
+      typeof data.metrics === "object" && data.metrics !== null
+        ? (data.metrics as Record<string, string | number>)
+        : {},
+    charts: Array.isArray(data.charts) ? (data.charts as StepResult["charts"]) : [],
+    updatedAt: new Date().toISOString(),
+  };
 }
 
 export default function Home() {
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [currentStep, setCurrentStep] = useState<string>("ingestion");
-  const [activeTab, setActiveTab] = useState<string>("ingestion");
-  const [stepResults, setStepResults] = useState<Record<string, StepResult>>({});
-  const [status, setStatus] = useState<string>("idle");
+  const [currentStage, setCurrentStage] = useState<StageId>("ingestion");
+  const [activeTab, setActiveTab] = useState<StageId>("ingestion");
+  const [isNotebookCollapsed, setIsNotebookCollapsed] = useState(false);
+  const [stepResults, setStepResults] = useState<StepResults>({});
+  const [status, setStatus] = useState("idle");
 
-  const handleStateUpdate = useCallback((data: any) => {
-    if (data?.session_id && !sessionId) {
-      setSessionId(data.session_id);
-    }
-
-    if (data?.state) {
-      setCurrentStep(data.state);
-      setActiveTab(data.state);
-
-      const steps = ["ingestion", "preprocessing", "eda", "standardization", "modeling", "evaluation"];
-      const currentIdx = steps.indexOf(data.state);
-      const producerStep = currentIdx > 0 ? steps[currentIdx - 1] : data.state;
-
-      if (data.reply) {
-        setStepResults(prev => ({
-          ...prev,
-          [producerStep]: {
-            analysis: data.reply,
-            data_preview: data.data_preview || null,
-            metrics: data.metrics || {},
-            charts: data.charts || []
-          }
-        }));
+  const handleStateUpdate = useCallback(
+    (data: Record<string, unknown>) => {
+      if (typeof data.session_id === "string") {
+        const nextSessionId = data.session_id;
+        setSessionId((existingId) => existingId ?? nextSessionId);
       }
-    }
 
-    if (data?.status) {
-      setStatus(data.status);
-    }
+      if (typeof data.status === "string") {
+        setStatus(data.status);
+      }
 
-    if (data?.reply && data?.state === "preprocessing") {
-      setStepResults(prev => ({
-        ...prev,
-        ingestion: {
-          analysis: data.reply,
-          data_preview: data.data_preview || null,
-          metrics: data.metrics || {},
-          charts: data.charts || []
-        }
+      const nextStageValue = String(data.state ?? "");
+
+      if (!isStageId(nextStageValue)) {
+        return;
+      }
+
+      const nextStage = nextStageValue;
+      const stageStayedOpen = nextStage === currentStage;
+
+      setCurrentStage(nextStage);
+
+      if (!data.reply) {
+        setActiveTab(nextStage);
+        return;
+      }
+
+      const result = buildStepResult(data);
+
+      if (nextStage === "evaluation" && data.status === "completed") {
+        setStepResults((previous) => ({
+          ...previous,
+          modeling: previous.modeling ?? result,
+          evaluation: result,
+        }));
+        setActiveTab("evaluation");
+        return;
+      }
+
+      const resultStage = stageStayedOpen ? nextStage : getProducerStage(nextStage);
+
+      setStepResults((previous) => ({
+        ...previous,
+        [resultStage]: result,
       }));
-    }
+      setActiveTab(resultStage);
+    },
+    [currentStage],
+  );
 
-    if (data?.state === "evaluation" && data?.reply) {
-      setStepResults(prev => ({
-        ...prev,
-        evaluation: {
-          analysis: data.reply,
-          data_preview: data.data_preview || null,
-          metrics: data.metrics || {},
-          charts: data.charts || []
-        }
-      }));
-    }
-  }, [sessionId]);
+  const completedStages = PIPELINE_STAGES.filter(
+    (stage) => getStageVisualStatus(stage.id, currentStage, status, stepResults) === "completed",
+  ).length;
 
   return (
-    <div className="app-shell">
-      <section className="chat-panel">
-        <Chat onStateUpdate={handleStateUpdate} sessionId={sessionId} setSessionId={setSessionId} />
-      </section>
+    <div className="studio-shell">
+      <header className="studio-navbar">
+        <div className="studio-navbar-top">
+          <div className="studio-brand">
+            <div className="studio-brand-mark">A</div>
+            <div>
+              <p className="studio-eyebrow">AutoML Workspace</p>
+              <h1>AutoML Studio</h1>
+            </div>
+          </div>
 
-      <section className="workspace">
-        <Visualizer
-          currentStep={currentStep}
-          activeTab={activeTab}
-          setActiveTab={setActiveTab}
-          stepResults={stepResults}
-          status={status}
-        />
-      </section>
+          <div className="studio-navbar-meta">
+            <div className="meta-copy">
+              <span>{sessionId ? "Live session" : "Preview mode"}</span>
+              <span>
+                {completedStages}/{PIPELINE_STAGES.length} complete
+              </span>
+            </div>
+            <button
+              type="button"
+              className="chrome-button"
+              onClick={() => setIsNotebookCollapsed((currentValue) => !currentValue)}
+            >
+              {isNotebookCollapsed ? "Show Notebook" : "Focus Mode"}
+            </button>
+          </div>
+        </div>
+
+        <nav className="studio-tabs" aria-label="AutoML workflow stages" role="tablist">
+          {PIPELINE_STAGES.map((stage) => {
+            const stageStatus = getStageVisualStatus(stage.id, currentStage, status, stepResults);
+            const isActive = activeTab === stage.id;
+
+            return (
+              <button
+                key={stage.id}
+                type="button"
+                className={`studio-tab${isActive ? " active" : ""}`}
+                role="tab"
+                aria-selected={isActive}
+                onClick={() => setActiveTab(stage.id)}
+                title={`${stage.label} · ${getStageStatusLabel(stageStatus)}`}
+              >
+                <span className={`stage-status-dot is-${stageStatus}`} aria-hidden="true" />
+                <span className="studio-tab-title">{stage.label}</span>
+              </button>
+            );
+          })}
+        </nav>
+      </header>
+
+      <main className={`studio-main${isNotebookCollapsed ? " is-focus-mode" : ""}`}>
+        <section className="chat-panel">
+          <Chat
+            currentStage={currentStage}
+            onStateUpdate={handleStateUpdate}
+            pipelineStatus={status}
+            sessionId={sessionId}
+            setSessionId={setSessionId}
+          />
+        </section>
+
+        <section className={`workspace${isNotebookCollapsed ? " is-collapsed" : ""}`}>
+          <Visualizer
+            activeTab={activeTab}
+            currentStage={currentStage}
+            hasSession={Boolean(sessionId)}
+            isCollapsed={isNotebookCollapsed}
+            onToggleNotebook={() => setIsNotebookCollapsed((currentValue) => !currentValue)}
+            status={status}
+            stepResults={stepResults}
+          />
+        </section>
+
+        {isNotebookCollapsed && (
+          <button
+            type="button"
+            className="restore-panel-button"
+            onClick={() => setIsNotebookCollapsed(false)}
+          >
+            Show Notebook
+          </button>
+        )}
+      </main>
     </div>
   );
 }
