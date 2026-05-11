@@ -128,6 +128,17 @@ export default function Chat({
       return;
     }
 
+    const allowedExtensions = [".csv", ".xlsx"];
+    const fileExtension = "." + file.name.split(".").pop()?.toLowerCase();
+    if (!allowedExtensions.includes(fileExtension)) {
+      setMessages((previous) => [
+        ...previous,
+        { role: "system", content: "⚠️ Unsupported file type. Please upload a .csv or .xlsx file." },
+      ]);
+      event.target.value = "";
+      return;
+    }
+
     setLoading(true);
     setMessages((previous) => [
       ...previous,
@@ -271,7 +282,7 @@ export default function Chat({
             onClick={() => fileInputRef.current?.click()}
             disabled={loading}
           >
-            Attach CSV
+            Attach CSV / .xlsx
           </button>
 
           <input
@@ -298,7 +309,7 @@ export default function Chat({
           <input
             ref={fileInputRef}
             type="file"
-            accept=".csv"
+            accept=".csv,.xlsx"
             hidden
             onChange={handleFileUpload}
           />

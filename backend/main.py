@@ -222,12 +222,19 @@ def read_root():
 
 @app.post("/upload")
 async def upload_dataset(file: UploadFile = File(...)):
-    if not file.filename.endswith('.csv'):
-        raise HTTPException(status_code=400, detail="Only CSV files are supported")
-    
+    filename_lower = file.filename.lower()
+    if not (filename_lower.endswith(".csv") or filename_lower.endswith(".xlsx")):
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported file type. Please upload a .csv or .xlsx file."
+        )
+
     try:
         contents = await file.read()
-        df = pd.read_csv(io.BytesIO(contents))
+        if filename_lower.endswith(".xlsx"):
+            df = pd.read_excel(io.BytesIO(contents))
+        else:
+            df = pd.read_csv(io.BytesIO(contents))
         
         session_id = str(uuid.uuid4())
         
