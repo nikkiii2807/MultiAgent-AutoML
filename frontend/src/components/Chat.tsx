@@ -1,65 +1,84 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { PIPELINE_STAGES, type StageId } from "../lib/studio";
+import {
+  PIPELINE_STAGES,
+  type ChatMessage,
+  type DatasetMeta,
+  type SessionSummary,
+  type StageId,
+} from "../lib/studio";
 
-interface Message {
-  role: "user" | "assistant" | "system";
-  content: string;
-}
-
-interface DatasetMeta {
-  name: string;
-  rows: number;
-  columns: number;
-}
+const API_BASE_URL = "http://localhost:8000";
 
 interface ChatProps {
   currentStage: StageId;
+  datasetMeta: DatasetMeta | null;
+  messages: ChatMessage[];
+  onLoadSession: (sessionId: string) => Promise<void>;
+  onNewSession: () => void;
   onStateUpdate: (state: Record<string, unknown>) => void;
   pipelineStatus: string;
+  sessionHistory: SessionSummary[];
   sessionId: string | null;
-  setSessionId: (id: string | null) => void;
 }
 
 function getStageLabel(stageId: StageId): string {
   return PIPELINE_STAGES.find((stage) => stage.id === stageId)?.label ?? "Notebook";
 }
 
+function formatUpdatedAt(updatedAt: string): string {
+  if (!updatedAt) {
+    return "Saved";
+  }
+
+  const parsed = new Date(updatedAt);
+  return Number.isNaN(parsed.getTime()) ? "Saved" : parsed.toLocaleString();
+}
+
+const PREVIEW_MESSAGES: ChatMessage[] = [
+  {
+    role: "assistant",
+    content:
+      "Upload a CSV and I’ll orchestrate the full AutoML pipeline while the notebook on the right updates stage by stage.",
+  },
+  {
+    role: "system",
+    content:
+      "Saved sessions appear in the history rail, so you can reopen any prior workflow and continue from the exact same context.",
+  },
+];
+
 export default function Chat({
   currentStage,
+  datasetMeta,
+  messages,
+  onLoadSession,
+  onNewSession,
   onStateUpdate,
   pipelineStatus,
+  sessionHistory,
   sessionId,
-  setSessionId,
 }: ChatProps) {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      role: "assistant",
-      content:
-        "Upload a CSV and I’ll orchestrate the full AutoML pipeline while the notebook on the right updates stage by stage.",
-    },
-    {
-      role: "system",
-      content:
-        "Notebook preview is interactive even before a dataset is attached, so you can inspect every stage layout right away.",
-    },
-  ]);
   const [inputVal, setInputVal] = useState("");
   const [loading, setLoading] = useState(false);
-  const [awaitingApproval, setAwaitingApproval] = useState(false);
-  const [datasetMeta, setDatasetMeta] = useState<DatasetMeta | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const stageLabel = getStageLabel(currentStage);
+  const awaitingApproval = Boolean(sessionId) && pipelineStatus === "awaiting_human";
+  const displayedMessages = useMemo(
+    () => (sessionId || messages.length > 0 ? messages : PREVIEW_MESSAGES),
+    [messages, sessionId],
+  );
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [loading, messages]);
+  }, [displayedMessages, loading]);
 
   async function sendMessage(
     message: string,
@@ -71,15 +90,11 @@ export default function Chat({
       return;
     }
 
-    if (!action) {
-      setMessages((previous) => [...previous, { role: "user", content: message }]);
-    }
-
     setLoading(true);
-    setAwaitingApproval(false);
+    setErrorMessage(null);
 
     try {
-      const response = await fetch("http://localhost:8000/chat", {
+      const response = await fetch(`${API_BASE_URL}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -95,28 +110,11 @@ export default function Chat({
         throw new Error(String(data.detail ?? "Unable to reach the AutoML backend."));
       }
 
-      if (typeof data.reply === "string") {
-        setMessages((previous) => [
-          ...previous,
-          { role: "assistant", content: data.reply as string },
-        ]);
-      }
-
       onStateUpdate(data);
-
-      if (data.status === "awaiting_human") {
-        setAwaitingApproval(true);
-      }
     } catch (error) {
-      const messageText =
-        error instanceof Error
-          ? error.message
-          : "Could not communicate with the backend service.";
-
-      setMessages((previous) => [
-        ...previous,
-        { role: "system", content: `⚠️ ${messageText}` },
-      ]);
+      setErrorMessage(
+        error instanceof Error ? error.message : "Could not communicate with the backend service.",
+      );
     } finally {
       setLoading(false);
     }
@@ -131,25 +129,19 @@ export default function Chat({
     const allowedExtensions = [".csv", ".xlsx"];
     const fileExtension = "." + file.name.split(".").pop()?.toLowerCase();
     if (!allowedExtensions.includes(fileExtension)) {
-      setMessages((previous) => [
-        ...previous,
-        { role: "system", content: "⚠️ Unsupported file type. Please upload a .csv or .xlsx file." },
-      ]);
+      setErrorMessage("Unsupported file type. Please upload a .csv or .xlsx file.");
       event.target.value = "";
       return;
     }
 
     setLoading(true);
-    setMessages((previous) => [
-      ...previous,
-      { role: "user", content: `Attached dataset **${file.name}**` },
-    ]);
+    setErrorMessage(null);
 
     const formData = new FormData();
     formData.append("file", file);
 
     try {
-      const response = await fetch("http://localhost:8000/upload", {
+      const response = await fetch(`${API_BASE_URL}/upload`, {
         method: "POST",
         body: formData,
       });
@@ -160,36 +152,31 @@ export default function Chat({
         throw new Error(String(data.detail ?? "Dataset upload failed."));
       }
 
-      const nextSessionId = typeof data.session_id === "string" ? data.session_id : null;
-      setSessionId(nextSessionId);
       onStateUpdate(data);
-      setDatasetMeta({
-        name: file.name,
-        rows: Number(data.rows ?? 0),
-        columns: Array.isArray(data.columns) ? data.columns.length : 0,
-      });
-      setMessages((previous) => [
-        ...previous,
-        {
-          role: "system",
-          content:
-            "Dataset connected. I’m running the ingestion notebook now and will pause wherever human approval is needed.",
-        },
-      ]);
-
-      await sendMessage("Start analysis", "approve", nextSessionId);
+      const nextSessionId = typeof data.session_id === "string" ? data.session_id : null;
+      if (nextSessionId) {
+        await sendMessage("Start analysis", "approve", nextSessionId);
+      }
     } catch (error) {
-      const messageText =
-        error instanceof Error
-          ? error.message
-          : "Could not connect to the backend service.";
-
-      setMessages((previous) => [
-        ...previous,
-        { role: "system", content: `⚠️ ${messageText}` },
-      ]);
+      setErrorMessage(error instanceof Error ? error.message : "Could not connect to the backend service.");
     } finally {
       event.target.value = "";
+      setLoading(false);
+    }
+  }
+
+  async function handleSelectSession(nextSessionId: string) {
+    if (nextSessionId === sessionId) {
+      return;
+    }
+
+    setLoading(true);
+    setErrorMessage(null);
+    try {
+      await onLoadSession(nextSessionId);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not load the selected session.");
+    } finally {
       setLoading(false);
     }
   }
@@ -201,7 +188,7 @@ export default function Chat({
       return;
     }
 
-    sendMessage(inputVal);
+    void sendMessage(inputVal);
     setInputVal("");
   }
 
@@ -217,108 +204,157 @@ export default function Chat({
         </div>
       </div>
 
-      <div className="chat-context-bar">
-        <span className="context-chip">
-          {datasetMeta
-            ? `${datasetMeta.name} · ${datasetMeta.rows.toLocaleString()} rows · ${datasetMeta.columns} cols`
-            : "No dataset attached"}
-        </span>
-        <span className="context-chip">Stage: {stageLabel}</span>
-        <span className="context-chip">
-          Status: {pipelineStatus === "awaiting_human" ? "Awaiting approval" : pipelineStatus}
-        </span>
-      </div>
-
-      <div className="messages-area">
-        {messages.map((message, index) => (
-          <div key={`${message.role}-${index}`} className={`message-row message-${message.role}`}>
-            <div className="message-avatar">
-              {message.role === "assistant" ? "AI" : message.role === "user" ? "You" : "Sys"}
+      <div className="chat-layout">
+        <aside className="history-rail">
+          <div className="history-rail-header">
+            <div>
+              <p className="assistant-chip-label">History</p>
+              <h3>Saved sessions</h3>
             </div>
-            <div className="message-stack">
-              <span className="message-role">
-                {message.role === "assistant"
-                  ? "AutoML Copilot"
-                  : message.role === "user"
-                    ? "You"
-                    : "System"}
-              </span>
-              <div className="message-bubble">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+            <button type="button" className="chrome-button history-new-button" onClick={onNewSession}>
+              New session
+            </button>
+          </div>
+
+          <div className="history-list">
+            {sessionHistory.length === 0 ? (
+              <div className="history-empty-state">
+                Upload a dataset to create your first persistent session.
               </div>
-            </div>
+            ) : (
+              sessionHistory.map((session) => {
+                const isActive = session.id === sessionId;
+                return (
+                  <button
+                    key={session.id}
+                    type="button"
+                    className={`history-card${isActive ? " is-active" : ""}`}
+                    onClick={() => void handleSelectSession(session.id)}
+                  >
+                    <div className="history-card-top">
+                      <strong>{session.title}</strong>
+                      <span>{PIPELINE_STAGES.find((stage) => stage.id === session.current_step)?.label ?? session.current_step}</span>
+                    </div>
+                    <p className="history-card-file">{session.filename}</p>
+                    <p className="history-card-preview">{session.preview || "Saved workflow with persisted artifacts."}</p>
+                    <div className="history-card-meta">
+                      <span>{session.status}</span>
+                      <span>{formatUpdatedAt(session.updated_at)}</span>
+                    </div>
+                  </button>
+                );
+              })
+            )}
           </div>
-        ))}
+        </aside>
 
-        {loading && (
-          <div className="message-row message-assistant">
-            <div className="message-avatar">AI</div>
-            <div className="typing-indicator" aria-label="Assistant is typing">
-              <span className="typing-dot" />
-              <span className="typing-dot" />
-              <span className="typing-dot" />
-            </div>
+        <div className="chat-main">
+          <div className="chat-context-bar">
+            <span className="context-chip">
+              {datasetMeta
+                ? `${datasetMeta.name} · ${datasetMeta.rows.toLocaleString()} rows · ${datasetMeta.columns} cols`
+                : "No dataset attached"}
+            </span>
+            <span className="context-chip">Stage: {stageLabel}</span>
+            <span className="context-chip">
+              Status: {pipelineStatus === "awaiting_human" ? "Awaiting approval" : pipelineStatus}
+            </span>
           </div>
-        )}
 
-        <div ref={messagesEndRef} />
-      </div>
+          <div className="messages-area">
+            {displayedMessages.map((message, index) => (
+              <div key={`${message.role}-${index}`} className={`message-row message-${message.role}`}>
+                <div className="message-avatar">
+                  {message.role === "assistant" ? "AI" : message.role === "user" ? "You" : "Sys"}
+                </div>
+                <div className="message-stack">
+                  <span className="message-role">
+                    {message.role === "assistant"
+                      ? "AutoML Copilot"
+                      : message.role === "user"
+                        ? "You"
+                        : "System"}
+                  </span>
+                  <div className="message-bubble">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                  </div>
+                </div>
+              </div>
+            ))}
 
-      <div className="chat-controls">
-        {awaitingApproval && (
-          <button
-            type="button"
-            className="action-button action-button-primary"
-            onClick={() => sendMessage("Approved", "approve")}
-          >
-            Approve and continue
-          </button>
-        )}
+            {loading && (
+              <div className="message-row message-assistant">
+                <div className="message-avatar">AI</div>
+                <div className="typing-indicator" aria-label="Assistant is typing">
+                  <span className="typing-dot" />
+                  <span className="typing-dot" />
+                  <span className="typing-dot" />
+                </div>
+              </div>
+            )}
 
-        <form className="composer" onSubmit={handleSend}>
-          <button
-            type="button"
-            className="action-button action-button-secondary"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={loading}
-          >
-            Attach CSV / .xlsx
-          </button>
+            <div ref={messagesEndRef} />
+          </div>
 
-          <input
-            className="composer-input"
-            type="text"
-            value={inputVal}
-            onChange={(event) => setInputVal(event.target.value)}
-            placeholder={
-              sessionId
-                ? "Ask for changes, approvals, or follow-up analysis..."
-                : "Attach a CSV to start a live conversation with the pipeline"
-            }
-            disabled={!sessionId || loading}
-          />
+          <div className="chat-controls">
+            {errorMessage && <p className="chat-error-banner">⚠ {errorMessage}</p>}
 
-          <button
-            type="submit"
-            className="action-button action-button-primary"
-            disabled={loading || !sessionId || !inputVal.trim()}
-          >
-            Send
-          </button>
+            {awaitingApproval && (
+              <button
+                type="button"
+                className="action-button action-button-primary"
+                onClick={() => void sendMessage("Approved", "approve")}
+              >
+                Approve and continue
+              </button>
+            )}
 
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".csv,.xlsx"
-            hidden
-            onChange={handleFileUpload}
-          />
-        </form>
+            <form className="composer" onSubmit={handleSend}>
+              <button
+                type="button"
+                className="action-button action-button-secondary"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={loading}
+              >
+                Attach CSV / .xlsx
+              </button>
 
-        <p className="composer-footnote">
-          The copilot stays synced with the notebook stages, so every approval updates the workflow on
-          the right.
-        </p>
+              <input
+                className="composer-input"
+                type="text"
+                value={inputVal}
+                onChange={(event) => setInputVal(event.target.value)}
+                placeholder={
+                  sessionId
+                    ? "Ask for changes, approvals, or follow-up analysis..."
+                    : "Attach a CSV to start or reopen a live persistent session"
+                }
+                disabled={!sessionId || loading}
+              />
+
+              <button
+                type="submit"
+                className="action-button action-button-primary"
+                disabled={loading || !sessionId || !inputVal.trim()}
+              >
+                Send
+              </button>
+
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".csv,.xlsx"
+                hidden
+                onChange={handleFileUpload}
+              />
+            </form>
+
+            <p className="composer-footnote">
+              The copilot stays synced with saved notebook stages, so reopening a session restores the
+              full workflow context on the right.
+            </p>
+          </div>
+        </div>
       </div>
     </>
   );

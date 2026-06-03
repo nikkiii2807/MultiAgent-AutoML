@@ -332,6 +332,130 @@ table {
   margin-bottom: 12px;
 }
 
+.chat-layout {
+  display: grid;
+  flex: 1;
+  gap: 18px;
+  grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+  min-height: 0;
+}
+
+.history-rail {
+  background: linear-gradient(180deg, #f9fbff 0%, #f5f7fb 100%);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  padding: 14px;
+}
+
+.history-rail-header {
+  align-items: flex-start;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.history-rail-header h3 {
+  font-size: 1rem;
+  margin-top: 4px;
+}
+
+.history-new-button {
+  min-height: 34px;
+  white-space: nowrap;
+}
+
+.history-list {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.history-empty-state {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 10px 4px;
+}
+
+.history-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  text-align: left;
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast),
+    transform var(--transition-fast);
+}
+
+.history-card:hover {
+  border-color: #c8d6ff;
+  box-shadow: 0 8px 24px rgba(79, 107, 237, 0.08);
+  transform: translateY(-1px);
+}
+
+.history-card.is-active {
+  background: var(--accent-soft);
+  border-color: #cddaff;
+}
+
+.history-card-top {
+  align-items: baseline;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.history-card-top strong {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.history-card-top span,
+.history-card-meta,
+.history-card-file {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.history-card-file {
+  font-weight: 600;
+}
+
+.history-card-preview {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.history-card-meta {
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.chat-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .assistant-summary {
   align-items: center;
   display: flex;
@@ -552,6 +676,16 @@ table {
   gap: 12px;
   margin-top: 16px;
   padding-top: 16px;
+}
+
+.chat-error-banner {
+  background: #fff3f4;
+  border: 1px solid #f2c8cf;
+  border-radius: 14px;
+  color: #a54758;
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 10px 12px;
 }
 
 .composer {
@@ -1053,6 +1187,14 @@ table {
 
   .composer {
     grid-template-columns: 1fr;
+  }
+
+  .chat-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .history-rail {
+    max-height: 280px;
   }
 }
 

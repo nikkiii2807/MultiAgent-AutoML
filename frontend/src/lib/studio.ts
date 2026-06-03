@@ -33,6 +33,29 @@ export interface StepResult {
 
 export type StepResults = Partial<Record<StageId, StepResult>>;
 
+export interface ChatMessage {
+  role: "user" | "assistant" | "system";
+  content: string;
+  action?: string | null;
+  created_at?: string;
+}
+
+export interface DatasetMeta {
+  name: string;
+  rows: number;
+  columns: number;
+}
+
+export interface SessionSummary {
+  id: string;
+  title: string;
+  filename: string;
+  current_step: StageId;
+  status: string;
+  updated_at: string;
+  preview?: string;
+}
+
 export interface StageDefinition {
   id: StageId;
   label: string;
