@@ -7,7 +7,6 @@ import {
   PIPELINE_STAGES,
   type ChatMessage,
   type DatasetMeta,
-  type SessionSummary,
   type StageId,
 } from "../lib/studio";
 
@@ -17,25 +16,13 @@ interface ChatProps {
   currentStage: StageId;
   datasetMeta: DatasetMeta | null;
   messages: ChatMessage[];
-  onLoadSession: (sessionId: string) => Promise<void>;
-  onNewSession: () => void;
   onStateUpdate: (state: Record<string, unknown>) => void;
   pipelineStatus: string;
-  sessionHistory: SessionSummary[];
   sessionId: string | null;
 }
 
 function getStageLabel(stageId: StageId): string {
   return PIPELINE_STAGES.find((stage) => stage.id === stageId)?.label ?? "Notebook";
-}
-
-function formatUpdatedAt(updatedAt: string): string {
-  if (!updatedAt) {
-    return "Saved";
-  }
-
-  const parsed = new Date(updatedAt);
-  return Number.isNaN(parsed.getTime()) ? "Saved" : parsed.toLocaleString();
 }
 
 const PREVIEW_MESSAGES: ChatMessage[] = [
@@ -47,7 +34,7 @@ const PREVIEW_MESSAGES: ChatMessage[] = [
   {
     role: "system",
     content:
-      "Saved sessions appear in the history rail, so you can reopen any prior workflow and continue from the exact same context.",
+      "Open History from the left edge anytime to reopen a saved session and continue where you left off.",
   },
 ];
 
@@ -55,11 +42,8 @@ export default function Chat({
   currentStage,
   datasetMeta,
   messages,
-  onLoadSession,
-  onNewSession,
   onStateUpdate,
   pipelineStatus,
-  sessionHistory,
   sessionId,
 }: ChatProps) {
   const [inputVal, setInputVal] = useState("");
@@ -165,22 +149,6 @@ export default function Chat({
     }
   }
 
-  async function handleSelectSession(nextSessionId: string) {
-    if (nextSessionId === sessionId) {
-      return;
-    }
-
-    setLoading(true);
-    setErrorMessage(null);
-    try {
-      await onLoadSession(nextSessionId);
-    } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : "Could not load the selected session.");
-    } finally {
-      setLoading(false);
-    }
-  }
-
   function handleSend(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -193,169 +161,111 @@ export default function Chat({
   }
 
   return (
-    <>
-      <div className="chat-panel-header">
-        <div className="assistant-summary">
-          <span className="assistant-dot" />
-          <div>
-            <p className="assistant-chip-label">AutoML Copilot</p>
-            <h2>Focused chat workspace</h2>
-          </div>
-        </div>
+    <div className="chat-workspace">
+      <div className="chat-context-bar">
+        <span className="context-chip">
+          {datasetMeta
+            ? `${datasetMeta.name} · ${datasetMeta.rows.toLocaleString()} rows · ${datasetMeta.columns} cols`
+            : "No dataset attached"}
+        </span>
+        <span className="context-chip">Stage: {stageLabel}</span>
+        <span className="context-chip">
+          Status: {pipelineStatus === "awaiting_human" ? "Awaiting approval" : pipelineStatus}
+        </span>
       </div>
 
-      <div className="chat-layout">
-        <aside className="history-rail">
-          <div className="history-rail-header">
-            <div>
-              <p className="assistant-chip-label">History</p>
-              <h3>Saved sessions</h3>
+      <div className="messages-area">
+        {displayedMessages.map((message, index) => (
+          <div key={`${message.role}-${index}`} className={`message-row message-${message.role}`}>
+            <div className="message-avatar">
+              {message.role === "assistant" ? "AI" : message.role === "user" ? "You" : "Sys"}
             </div>
-            <button type="button" className="chrome-button history-new-button" onClick={onNewSession}>
-              New session
+            <div className="message-stack">
+              <span className="message-role">
+                {message.role === "assistant"
+                  ? "AutoML Copilot"
+                  : message.role === "user"
+                    ? "You"
+                    : "System"}
+              </span>
+              <div className="message-bubble readable-content">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+              </div>
+            </div>
+          </div>
+        ))}
+
+        {loading && (
+          <div className="message-row message-assistant">
+            <div className="message-avatar">AI</div>
+            <div className="typing-indicator" aria-label="Assistant is typing">
+              <span className="typing-dot" />
+              <span className="typing-dot" />
+              <span className="typing-dot" />
+            </div>
+          </div>
+        )}
+
+        <div ref={messagesEndRef} />
+      </div>
+
+      <div className="chat-controls">
+        {errorMessage && <p className="chat-error-banner">⚠ {errorMessage}</p>}
+
+        {awaitingApproval && (
+          <button
+            type="button"
+            className="action-button action-button-primary"
+            onClick={() => void sendMessage("Approved", "approve")}
+          >
+            Approve and continue
+          </button>
+        )}
+
+        <form className="composer" onSubmit={handleSend}>
+          <div className="composer-attach-row">
+            <button
+              type="button"
+              className="action-button action-button-secondary composer-attach-button"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={loading}
+            >
+              Attach CSV / .xlsx
             </button>
           </div>
 
-          <div className="history-list">
-            {sessionHistory.length === 0 ? (
-              <div className="history-empty-state">
-                Upload a dataset to create your first persistent session.
-              </div>
-            ) : (
-              sessionHistory.map((session) => {
-                const isActive = session.id === sessionId;
-                return (
-                  <button
-                    key={session.id}
-                    type="button"
-                    className={`history-card${isActive ? " is-active" : ""}`}
-                    onClick={() => void handleSelectSession(session.id)}
-                  >
-                    <div className="history-card-top">
-                      <strong>{session.title}</strong>
-                      <span>{PIPELINE_STAGES.find((stage) => stage.id === session.current_step)?.label ?? session.current_step}</span>
-                    </div>
-                    <p className="history-card-file">{session.filename}</p>
-                    <p className="history-card-preview">{session.preview || "Saved workflow with persisted artifacts."}</p>
-                    <div className="history-card-meta">
-                      <span>{session.status}</span>
-                      <span>{formatUpdatedAt(session.updated_at)}</span>
-                    </div>
-                  </button>
-                );
-              })
-            )}
+          <div className="composer-row">
+            <input
+              className="composer-input"
+              type="text"
+              value={inputVal}
+              onChange={(event) => setInputVal(event.target.value)}
+              placeholder={
+                sessionId
+                  ? "Ask for changes, approvals, or follow-up analysis..."
+                  : "Attach a CSV to start or reopen a live session"
+              }
+              disabled={!sessionId || loading}
+            />
+
+            <button
+              type="submit"
+              className="action-button action-button-primary composer-send-button"
+              disabled={loading || !sessionId || !inputVal.trim()}
+            >
+              Send
+            </button>
           </div>
-        </aside>
+        </form>
 
-        <div className="chat-main">
-          <div className="chat-context-bar">
-            <span className="context-chip">
-              {datasetMeta
-                ? `${datasetMeta.name} · ${datasetMeta.rows.toLocaleString()} rows · ${datasetMeta.columns} cols`
-                : "No dataset attached"}
-            </span>
-            <span className="context-chip">Stage: {stageLabel}</span>
-            <span className="context-chip">
-              Status: {pipelineStatus === "awaiting_human" ? "Awaiting approval" : pipelineStatus}
-            </span>
-          </div>
-
-          <div className="messages-area">
-            {displayedMessages.map((message, index) => (
-              <div key={`${message.role}-${index}`} className={`message-row message-${message.role}`}>
-                <div className="message-avatar">
-                  {message.role === "assistant" ? "AI" : message.role === "user" ? "You" : "Sys"}
-                </div>
-                <div className="message-stack">
-                  <span className="message-role">
-                    {message.role === "assistant"
-                      ? "AutoML Copilot"
-                      : message.role === "user"
-                        ? "You"
-                        : "System"}
-                  </span>
-                  <div className="message-bubble">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
-                  </div>
-                </div>
-              </div>
-            ))}
-
-            {loading && (
-              <div className="message-row message-assistant">
-                <div className="message-avatar">AI</div>
-                <div className="typing-indicator" aria-label="Assistant is typing">
-                  <span className="typing-dot" />
-                  <span className="typing-dot" />
-                  <span className="typing-dot" />
-                </div>
-              </div>
-            )}
-
-            <div ref={messagesEndRef} />
-          </div>
-
-          <div className="chat-controls">
-            {errorMessage && <p className="chat-error-banner">⚠ {errorMessage}</p>}
-
-            {awaitingApproval && (
-              <button
-                type="button"
-                className="action-button action-button-primary"
-                onClick={() => void sendMessage("Approved", "approve")}
-              >
-                Approve and continue
-              </button>
-            )}
-
-            <form className="composer" onSubmit={handleSend}>
-              <button
-                type="button"
-                className="action-button action-button-secondary"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={loading}
-              >
-                Attach CSV / .xlsx
-              </button>
-
-              <input
-                className="composer-input"
-                type="text"
-                value={inputVal}
-                onChange={(event) => setInputVal(event.target.value)}
-                placeholder={
-                  sessionId
-                    ? "Ask for changes, approvals, or follow-up analysis..."
-                    : "Attach a CSV to start or reopen a live persistent session"
-                }
-                disabled={!sessionId || loading}
-              />
-
-              <button
-                type="submit"
-                className="action-button action-button-primary"
-                disabled={loading || !sessionId || !inputVal.trim()}
-              >
-                Send
-              </button>
-
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".csv,.xlsx"
-                hidden
-                onChange={handleFileUpload}
-              />
-            </form>
-
-            <p className="composer-footnote">
-              The copilot stays synced with saved notebook stages, so reopening a session restores the
-              full workflow context on the right.
-            </p>
-          </div>
-        </div>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".csv,.xlsx"
+          className="composer-file-input"
+          onChange={handleFileUpload}
+        />
       </div>
-    </>
+    </div>
   );
 }

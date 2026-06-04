@@ -217,7 +217,7 @@ function AnalysisBlock({
         <span className="analysis-callout-label">Assistant note</span>
         <p>{insight}</p>
       </div>
-      <div className="analysis-markdown">
+      <div className="analysis-markdown readable-content">
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown}</ReactMarkdown>
       </div>
     </div>
@@ -309,7 +309,7 @@ export default function Visualizer({
   const liveResult = stepResults[activeTab];
   const stageStatus = getStageVisualStatus(activeTab, currentStage, status, stepResults);
   const activeStage = PIPELINE_STAGES.find((stage) => stage.id === activeTab) ?? PIPELINE_STAGES[0];
-  const [expandedCells, setExpandedCells] = useState<Record<string, boolean>>({});
+  const [collapsedCells, setCollapsedCells] = useState<Record<string, boolean>>({});
 
   const mergedMetrics =
     liveResult && Object.keys(liveResult.metrics).length > 0 ? liveResult.metrics : preview.metrics;
@@ -318,11 +318,24 @@ export default function Visualizer({
   const mergedAnalysis = liveResult?.analysis ?? preview.analysis;
   const mergedRows = parseRows(liveResult?.data_preview ?? preview.dataPreview);
 
+  const cellKeys = preview.cells.map((cell) => `${activeTab}-${cell.id}`);
+  const expandedCount = cellKeys.filter((cellKey) => !collapsedCells[cellKey]).length;
+  const allExpanded = expandedCount === cellKeys.length;
+
   function toggleCell(cellKey: string) {
-    setExpandedCells((previous) => ({
+    setCollapsedCells((previous) => ({
       ...previous,
-      [cellKey]: !(previous[cellKey] ?? true),
+      [cellKey]: !(previous[cellKey] ?? false),
     }));
+  }
+
+  function setAllCellsExpanded(nextExpanded: boolean) {
+    if (nextExpanded) {
+      setCollapsedCells({});
+      return;
+    }
+
+    setCollapsedCells(Object.fromEntries(cellKeys.map((cellKey) => [cellKey, true])));
   }
 
   return (
@@ -337,6 +350,13 @@ export default function Visualizer({
         </div>
 
         <div className="workspace-toolbar-pills">
+          <button
+            type="button"
+            className="chrome-button"
+            onClick={() => setAllCellsExpanded(!allExpanded)}
+          >
+            {allExpanded ? "Collapse all cells" : "Expand all cells"}
+          </button>
           <span className={`workspace-mode-pill${liveResult ? " is-live" : ""}`}>
             {liveResult ? "Live output" : hasSession ? "Preview until this stage runs" : "Preview"}
           </span>
@@ -355,21 +375,28 @@ export default function Visualizer({
             <p className="notebook-hero-eyebrow">{activeStage.helper}</p>
             <h3>{activeStage.prompt}</h3>
           </div>
-          <p className="workspace-summary-copy">{preview.stageSummary}</p>
+          <p className="workspace-summary-copy readable-content">{preview.stageSummary}</p>
         </section>
 
         {preview.cells.map((cell) => {
           const cellKey = `${activeTab}-${cell.id}`;
-          const isExpanded = expandedCells[cellKey] ?? true;
+          const isExpanded = !(collapsedCells[cellKey] ?? false);
 
           return (
-            <section key={cellKey} className="notebook-block">
+            <section
+              key={cellKey}
+              className={`notebook-block${isExpanded ? " is-expanded" : " is-collapsed"}`}
+            >
               <button
                 type="button"
                 className="code-cell-header"
+                aria-expanded={isExpanded}
                 onClick={() => toggleCell(cellKey)}
               >
                 <div className="code-cell-meta">
+                  <span className="code-cell-chevron" aria-hidden="true">
+                    {isExpanded ? "▾" : "▸"}
+                  </span>
                   <span className="code-cell-index">{cell.label}</span>
                   <div>
                     <p className="code-cell-title">{cell.title}</p>
@@ -384,22 +411,24 @@ export default function Visualizer({
               </button>
 
               {isExpanded && (
-                <div className="code-cell-body">
-                  <pre>
-                    <code>{cell.code}</code>
-                  </pre>
+                <div className="notebook-cell-content">
+                  <div className="code-cell-body">
+                    <pre>
+                      <code>{cell.code}</code>
+                    </pre>
+                  </div>
+
+                  <div className="output-cell">
+                    {cell.output === "analysis" && (
+                      <AnalysisBlock insight={preview.insight} markdown={mergedAnalysis} />
+                    )}
+                    {cell.output === "analytics" && (
+                      <AnalyticsBlock charts={mergedCharts} metrics={mergedMetrics} />
+                    )}
+                    {cell.output === "table" && <TableBlock rows={mergedRows} />}
+                  </div>
                 </div>
               )}
-
-              <div className="output-cell">
-                {cell.output === "analysis" && (
-                  <AnalysisBlock insight={preview.insight} markdown={mergedAnalysis} />
-                )}
-                {cell.output === "analytics" && (
-                  <AnalyticsBlock charts={mergedCharts} metrics={mergedMetrics} />
-                )}
-                {cell.output === "table" && <TableBlock rows={mergedRows} />}
-              </div>
             </section>
           );
         })}

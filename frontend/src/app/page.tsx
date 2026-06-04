@@ -1,13 +1,19 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import Chat from "../components/Chat";
+import HistoryDrawer from "../components/HistoryDrawer";
+import HistoryToggleButton from "../components/HistoryToggleButton";
+import LayoutSwitcher from "../components/LayoutSwitcher";
+import PanelResizeHandle from "../components/PanelResizeHandle";
 import Visualizer from "../components/Visualizer";
+import { useHistoryDrawer } from "../hooks/useHistoryDrawer";
+import { useMovableHistoryButton } from "../hooks/useMovableHistoryButton";
+import { useWorkspaceLayout } from "../hooks/useWorkspaceLayout";
 import {
   PIPELINE_ORDER,
   PIPELINE_STAGES,
   getProducerStage,
-  getStageStatusLabel,
   getStageVisualStatus,
   isStageId,
   type ChatMessage,
@@ -154,12 +160,31 @@ export default function Home() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [currentStage, setCurrentStage] = useState<StageId>("ingestion");
   const [activeTab, setActiveTab] = useState<StageId>("ingestion");
-  const [isNotebookCollapsed, setIsNotebookCollapsed] = useState(false);
   const [stepResults, setStepResults] = useState<StepResults>({});
   const [status, setStatus] = useState("idle");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [datasetMeta, setDatasetMeta] = useState<DatasetMeta | null>(null);
   const [sessionHistory, setSessionHistory] = useState<SessionSummary[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  const {
+    layoutMode,
+    mainSplit,
+    isNotebookCollapsed,
+    mainContainerRef,
+    setLayoutMode,
+    toggleFocusMode,
+    beginPanelResize,
+  } = useWorkspaceLayout();
+  const { isOpen: isHistoryOpen, open: openHistory, close: closeHistory, drawerRef, toggleButtonRef } =
+    useHistoryDrawer();
+  const {
+    workspaceRef,
+    position: historyButtonPosition,
+    isDragging: isHistoryButtonDragging,
+    beginDrag: beginHistoryButtonDrag,
+    consumeDragClick,
+  } = useMovableHistoryButton();
 
   const fetchSessionHistory = useCallback(async (): Promise<SessionSummary[]> => {
     const response = await fetch(`${API_BASE_URL}/sessions`);
@@ -241,6 +266,24 @@ export default function Home() {
     [applySessionPayload, fetchSessionHistory],
   );
 
+  const handleSelectSession = useCallback(
+    async (nextSessionId: string) => {
+      if (nextSessionId === sessionId) {
+        closeHistory();
+        return;
+      }
+
+      setHistoryLoading(true);
+      try {
+        await handleLoadSession(nextSessionId);
+        closeHistory();
+      } finally {
+        setHistoryLoading(false);
+      }
+    },
+    [closeHistory, handleLoadSession, sessionId],
+  );
+
   const handleNewSession = useCallback(() => {
     setSessionId(null);
     setCurrentStage("ingestion");
@@ -249,7 +292,8 @@ export default function Home() {
     setStatus("idle");
     setMessages([]);
     setDatasetMeta(null);
-  }, []);
+    closeHistory();
+  }, [closeHistory]);
 
   useEffect(() => {
     void fetchSessionHistory().then(setSessionHistory).catch(() => undefined);
@@ -259,31 +303,44 @@ export default function Home() {
     (stage) => getStageVisualStatus(stage.id, currentStage, status, stepResults) === "completed",
   ).length;
 
+  const currentStageLabel =
+    PIPELINE_STAGES.find((stage) => stage.id === currentStage)?.label ?? "Ingestion";
+
+  const toggleHistory = () => {
+    if (consumeDragClick()) {
+      return;
+    }
+
+    if (isHistoryOpen) {
+      closeHistory();
+    } else {
+      openHistory();
+    }
+  };
+
   return (
     <div className="studio-shell">
-      <header className="studio-navbar">
+      <header className="studio-navbar studio-navbar-compact">
         <div className="studio-navbar-top">
           <div className="studio-brand">
             <div className="studio-brand-mark">A</div>
             <div>
-              <p className="studio-eyebrow">AutoML Workspace</p>
               <h1>AutoML Studio</h1>
+              <p className="studio-subtitle">
+                {currentStageLabel} · {completedStages}/{PIPELINE_STAGES.length} complete
+              </p>
             </div>
           </div>
 
-          <div className="studio-navbar-meta">
-            <div className="meta-copy">
-              <span>{sessionId ? "Live session" : "Preview mode"}</span>
-              <span>
-                {completedStages}/{PIPELINE_STAGES.length} complete
-              </span>
-            </div>
+          <div className="studio-navbar-actions">
+            <LayoutSwitcher layoutMode={layoutMode} onChange={setLayoutMode} />
             <button
               type="button"
-              className="chrome-button"
-              onClick={() => setIsNotebookCollapsed((currentValue) => !currentValue)}
+              className={`chrome-button${layoutMode === "focus" ? " is-active" : ""}`}
+              aria-pressed={layoutMode === "focus"}
+              onClick={toggleFocusMode}
             >
-              {isNotebookCollapsed ? "Show Notebook" : "Focus Mode"}
+              Focus Mode
             </button>
           </div>
         </div>
@@ -301,7 +358,6 @@ export default function Home() {
                 role="tab"
                 aria-selected={isActive}
                 onClick={() => setActiveTab(stage.id)}
-                title={`${stage.label} · ${getStageStatusLabel(stageStatus)}`}
               >
                 <span className={`stage-status-dot is-${stageStatus}`} aria-hidden="true" />
                 <span className="studio-tab-title">{stage.label}</span>
@@ -311,43 +367,77 @@ export default function Home() {
         </nav>
       </header>
 
-      <main className={`studio-main${isNotebookCollapsed ? " is-focus-mode" : ""}`}>
-        <section className="chat-panel">
-          <Chat
-            currentStage={currentStage}
-            datasetMeta={datasetMeta}
-            messages={messages}
-            onLoadSession={handleLoadSession}
-            onNewSession={handleNewSession}
-            onStateUpdate={handleStateUpdate}
-            pipelineStatus={status}
-            sessionHistory={sessionHistory}
-            sessionId={sessionId}
-          />
-        </section>
+      <div className="studio-workspace" ref={workspaceRef}>
+        <HistoryToggleButton
+          ref={toggleButtonRef}
+          isDragging={isHistoryButtonDragging}
+          isOpen={isHistoryOpen}
+          position={historyButtonPosition}
+          sessionCount={sessionHistory.length}
+          onClick={toggleHistory}
+          onDragHandlePointerDown={(event) => beginHistoryButtonDrag(event.clientX, event.clientY)}
+        />
 
-        <section className={`workspace${isNotebookCollapsed ? " is-collapsed" : ""}`}>
-          <Visualizer
-            activeTab={activeTab}
-            currentStage={currentStage}
-            hasSession={Boolean(sessionId)}
-            isCollapsed={isNotebookCollapsed}
-            onToggleNotebook={() => setIsNotebookCollapsed((currentValue) => !currentValue)}
-            status={status}
-            stepResults={stepResults}
-          />
-        </section>
+        <HistoryDrawer
+          activeSessionId={sessionId}
+          drawerRef={drawerRef}
+          isLoading={historyLoading}
+          isOpen={isHistoryOpen}
+          onClose={closeHistory}
+          onNewSession={handleNewSession}
+          onSelectSession={(id) => void handleSelectSession(id)}
+          sessions={sessionHistory}
+          toggleButtonRef={toggleButtonRef}
+          workspaceRef={workspaceRef}
+        />
 
-        {isNotebookCollapsed && (
-          <button
-            type="button"
-            className="restore-panel-button"
-            onClick={() => setIsNotebookCollapsed(false)}
-          >
-            Show Notebook
-          </button>
-        )}
-      </main>
+        <main
+          ref={mainContainerRef}
+          className={`studio-main${isNotebookCollapsed ? " is-focus-mode" : ""}`}
+          style={
+            isNotebookCollapsed
+              ? undefined
+              : ({ "--main-split": String(mainSplit) } as CSSProperties)
+          }
+        >
+          <section className="chat-panel" aria-label="AutoML Copilot">
+            <Chat
+              currentStage={currentStage}
+              datasetMeta={datasetMeta}
+              messages={messages}
+              onStateUpdate={handleStateUpdate}
+              pipelineStatus={status}
+              sessionId={sessionId}
+            />
+          </section>
+
+          {!isNotebookCollapsed && (
+            <PanelResizeHandle onPointerDown={(event) => beginPanelResize(event.clientX)} />
+          )}
+
+          <section className={`workspace${isNotebookCollapsed ? " is-collapsed" : ""}`} aria-label="Notebook">
+            <Visualizer
+              activeTab={activeTab}
+              currentStage={currentStage}
+              hasSession={Boolean(sessionId)}
+              isCollapsed={isNotebookCollapsed}
+              onToggleNotebook={toggleFocusMode}
+              status={status}
+              stepResults={stepResults}
+            />
+          </section>
+
+          {isNotebookCollapsed && (
+            <button
+              type="button"
+              className="restore-panel-button"
+              onClick={() => setLayoutMode("balanced")}
+            >
+              Show Notebook
+            </button>
+          )}
+        </main>
+      </div>
     </div>
   );
 }

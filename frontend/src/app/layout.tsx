@@ -6,6 +6,11 @@ export const metadata: Metadata = {
   description: "Notebook-style AutoML workspace with an AI copilot and interactive analytics outputs.",
 };
 
+export const viewport = {
+  width: "device-width",
+  initialScale: 1,
+};
+
 export default function RootLayout({
   children,
 }: Readonly<{
